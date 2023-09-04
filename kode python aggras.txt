@@ -1,0 +1,220 @@
+# Library
+import time
+import requests
+import math
+import random
+import time
+import RPi.GPIO as GPIO
+import telepot
+from telepot.loop import MessageLoop
+
+# Ubidots Credentials
+TOKEN = "BBFF-S3F54WWmt1xZQR9u9q4SuoYQijzK2c"
+DEVICE_LABEL = "pemilah-sampah-otomatis"
+VARIABLE_LABEL_1 = "ultrasonic-1"
+VARIABLE_LABEL_2 = "ultrasonic-2"
+
+# Pinout
+PIN_TRIGGER_1 = 12
+PIN_ECHO_1 = 18
+PIN_TRIGGER_2 = 13
+PIN_ECHO_2 = 26
+PIN_PROX = 25
+PIN_SERVO = 23
+PIN_LED_1 = 5
+PIN_LED_2 = 6
+PIN_BUZZER = 4
+
+# Tinggi maksimum ultrasonik
+tinggi = 21
+
+# Set sudut servo
+sudut_logam = 160
+sudut_non_logam = 1
+sudut_netral = 45
+
+# Setup Servo
+GPIO.setmode(GPIO.BCM)  
+GPIO.setwarnings(False)
+GPIO.setup(PIN_SERVO, GPIO.OUT)
+
+# Frekuensi PWM Servo
+pwm = GPIO.PWM(PIN_SERVO, 50)
+pwm.start(0)
+
+# Interval
+interval = 5
+timer = time.time()
+
+# Setup
+def setup():
+    # Setup Ultrasonik 1
+    GPIO.setup(PIN_TRIGGER_1 ,GPIO.OUT)
+    GPIO.setup(PIN_ECHO_1, GPIO.IN)  
+    # Setup Ultrasonik 2
+    GPIO.setup(PIN_TRIGGER_2 ,GPIO.OUT)
+    GPIO.setup(PIN_ECHO_2, GPIO.IN)
+    # Setup Proximity
+    GPIO.setup(PIN_PROX, GPIO.IN)
+    #GPIO.setup(PIN_PROX, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    
+    # Setup Led
+    GPIO.setup(PIN_LED_1 ,GPIO.OUT)
+    GPIO.setup(PIN_LED_2 ,GPIO.OUT)
+    # Setup Buzzer
+    GPIO.setup(PIN_BUZZER ,GPIO.OUT)
+    # Posisi servo netral
+    set_servo_angle(sudut_netral)
+
+# Fungsi gerak servo
+def set_servo_angle(angle):
+    duty_cycle = 2 + (angle / 18)
+    pwm.ChangeDutyCycle(duty_cycle)
+    time.sleep(1)
+
+# Fungsi mengukur jarak ultrasonik 1
+def distance_1():
+    GPIO.output(PIN_TRIGGER_1, GPIO.LOW)
+    time.sleep(1)
+    print ("Calculating distance 1")
+    GPIO.output(PIN_TRIGGER_1, GPIO.HIGH)
+    time.sleep(0.00001)
+    GPIO.output(PIN_TRIGGER_1, GPIO.LOW)
+
+    while GPIO.input(PIN_ECHO_1)==0:
+        pulse_start_time = time.time()
+    while GPIO.input(PIN_ECHO_1)==1:
+        pulse_end_time = time.time()
+
+    pulse_duration = pulse_end_time - pulse_start_time
+    jarak = round(pulse_duration * 13150, 2)
+    print("Ultrasonik1 : " + str(jarak))
+
+    return jarak
+
+# Fungsi mengukur jarak ultrasonik 2
+def distance_2():
+    GPIO.output(PIN_TRIGGER_2, GPIO.LOW)
+    time.sleep(1)
+    print ("Calculating distance 2")
+    GPIO.output(PIN_TRIGGER_2, GPIO.HIGH)
+    time.sleep(0.00001)
+    GPIO.output(PIN_TRIGGER_2, GPIO.LOW)
+
+    while GPIO.input(PIN_ECHO_2)==0:
+        pulse_start_time = time.time()
+    while GPIO.input(PIN_ECHO_2)==1:
+        pulse_end_time = time.time()
+
+    pulse_duration = pulse_end_time - pulse_start_time
+    jarak = round(pulse_duration * 13150, 2)
+    print("Ultrasonik2 : " + str(jarak))
+
+    return jarak
+
+# Fungsi pengubah jarak ke persen
+def jarak_to_persen(jarak):
+    persen = 100 - ((jarak / tinggi) * 100)
+    print("Persen : " + str(persen) + " %")
+    return persen
+
+# Fungsi membuat payload
+def build_payload(variable_1, variable_2):
+    value_1 = jarak_to_persen(distance_1())
+    value_2 = jarak_to_persen(distance_2())
+    payload = {variable_1: value_1, variable_2: value_2}
+    
+    
+
+    if ((value_1 > 80)or(value_2 > 80)):
+        print("buzzer nyala")
+        time.sleep(3)
+        GPIO.output(PIN_BUZZER,GPIO.HIGH)
+    elif ((value_1 < 80)or(value_2 < 80)):
+        print("buzzer mati")
+        GPIO.output(PIN_BUZZER,GPIO.LOW)
+        
+    #if  (value_2 > 80):
+        #print("buzzer nyala")
+        #GPIO.output(PIN_BUZZER,GPIO.HIGH)
+    #elif  (value_2 < 80):
+        #print("buzzer mati")
+        #GPIO.output(PIN_BUZZER,GPIO.LOW)
+
+    return payload
+
+# Fungsi post request http
+def post_request(payload):
+    
+    url = "http://industrial.api.ubidots.com"
+    url = "{}/api/v1.6/devices/{}".format(url, DEVICE_LABEL)
+    headers = {"X-Auth-Token": TOKEN, "Content-Type": "application/json"}
+
+    status = 400
+    attempts = 0
+    while status >= 400 and attempts <= 5:
+        req = requests.post(url=url, headers=headers, json=payload)
+        status = req.status_code
+        attempts += 1
+        time.sleep(1)
+
+    return True
+
+# Fungsi kirim data
+def send_data():
+    payload = build_payload(VARIABLE_LABEL_1, VARIABLE_LABEL_2)
+    post_request(payload)
+
+# Telegram
+def handle(msg):
+    chat_id = msg['chat']['id']
+    command = msg['text']
+    print('Got command: %s' % command)
+
+    if (command == "status1"):
+        persen1 = jarak_to_persen(distance_1())
+        bot.sendMessage(chat_id, text="Tempat sampah 1 : %s" % round(persen1)+"%")
+    
+    if (command == "status2"):
+        persen2 = jarak_to_persen(distance_2())
+        bot.sendMessage(chat_id, text="Tempat sampah 2 : %s" % round(persen2)+"%")
+
+# Fungsi utama program
+def main():
+    # Send data
+    global timer
+    if ((time.time() - timer) > interval):
+        send_data()
+        timer = time.time()
+
+    # Deteksi logam
+    if GPIO.input(PIN_PROX) == GPIO.HIGH:
+        print("Logam terdeteksi")
+        set_servo_angle(sudut_logam)
+        time.sleep(0.5)
+        set_servo_angle(sudut_netral)
+        GPIO.output(PIN_LED_2, GPIO.HIGH)
+        GPIO.output(PIN_LED_1, GPIO.LOW)
+    else:
+        print("Logam tidak terdeteksi")
+        set_servo_angle(sudut_non_logam)
+        time.sleep(0.3)
+        set_servo_angle(sudut_netral)
+        GPIO.output(PIN_LED_1, GPIO.HIGH)
+        GPIO.output(PIN_LED_2, GPIO.LOW)
+
+    time.sleep(5)
+
+# Input Bot Token
+bot = telepot.Bot('6415795341:AAGSLfeG2CIo9e8UrorZm78-JIFS_MVu1D8')
+print (bot.getMe())
+MessageLoop(bot,handle).run_as_thread()
+
+if _name_ == '_main_':
+    try:
+        setup()
+        while True:
+            main()
+    except KeyboardInterrupt:
+        pwm.stop()
+        GPIO.cleanup()
